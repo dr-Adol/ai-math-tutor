@@ -17,6 +17,11 @@ npm run eval                    # behaviour eval against the real model (needs t
 Deploy: push to GitHub → import in Vercel → set `OPENAI_API_KEY` (optionally `OPENAI_MODEL`, `RATE_LIMIT_PER_MINUTE`). No database needed.
 Default model: `gpt-5.4-mini`; any Chat Completions model with Structured Outputs works.
 
+**Free option (Google Gemini).** The app uses the OpenAI SDK, so any OpenAI-compatible provider works without code
+changes. For Gemini's free tier set `OPENAI_API_KEY` to a key from [Google AI Studio](https://aistudio.google.com/apikey),
+`OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/` and `OPENAI_MODEL=gemini-3.5-flash`.
+If a provider rejects strict JSON schemas, the server falls back to JSON mode automatically.
+
 ## Test scenario
 
 The app opens on `3(x + 4) = 2x + 19`. Click **"Try the test scenario"** (sends `3x + 4 = 2x + 19`):

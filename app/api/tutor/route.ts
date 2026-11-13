@@ -64,23 +64,80 @@ export async function POST(req: Request) {
     const res: TutorResponse = { reply, verifier };
     return NextResponse.json(res);
   } catch (err: any) {
-    console.error("[tutor]", err?.status, err?.message);
-    const status = err?.status === 429 ? 429 : 502;
-    const error = err?.status === 429 ? "The AI service is busy. Try again in a moment." : err?.message?.includes("OPENAI_API_KEY") ? err.message : "The tutor could not answer. Try again.";
+    console.error("[tutor]", err?.status, err?.code, err?.message);
+    const { status, error } = describeError(err);
     return NextResponse.json({ error }, { status });
   }
 }
 
+/** Map OpenAI / config errors to a clear message for the person running the demo. */
+function describeError(err: any): { status: number; error: string } {
+  const code = err?.code ?? err?.error?.code;
+  if (err?.message?.includes("OPENAI_API_KEY")) return { status: 500, error: err.message };
+  if (code === "insufficient_quota") return { status: 503, error: "The OpenAI account has no credits left. Add billing at platform.openai.com/settings/organization/billing." };
+  if (err?.status === 401) return { status: 503, error: "The OpenAI API key is invalid. Check OPENAI_API_KEY in the deployment settings." };
+  if (err?.status === 404 || code === "model_not_found") return { status: 503, error: `The model "${MODEL}" is not available for this OpenAI account. Set OPENAI_MODEL to a model you have access to.` };
+  if (err?.status === 429) return { status: 429, error: "The AI service is busy. Try again in a moment." };
+  return { status: 502, error: "The tutor could not answer. Try again." };
+}
+
+/** Set once a provider rejects strict JSON schemas, so later calls go straight to JSON mode. */
+let schemaUnsupported = false;
+
+/**
+ * Works with OpenAI and with OpenAI-compatible providers (e.g. Google Gemini via OPENAI_BASE_URL).
+ * Prefers strict Structured Outputs; if the provider rejects the schema (HTTP 400),
+ * falls back to plain JSON mode with the schema described in the prompt.
+ */
 async function ask(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<TutorReply> {
   // No temperature: newer reasoning models only accept the default.
+  if (!schemaUnsupported) {
+    try {
+      const completion = await openai().chat.completions.create({
+        model: MODEL,
+        response_format: { type: "json_schema", json_schema: TUTOR_REPLY_SCHEMA as any },
+        messages,
+      });
+      return parseReply(completion.choices[0]?.message?.content);
+    } catch (err: any) {
+      if (err?.status !== 400) throw err;
+      console.warn("[tutor] provider rejected json_schema, switching to JSON mode:", err?.message);
+      schemaUnsupported = true;
+    }
+  }
   const completion = await openai().chat.completions.create({
     model: MODEL,
-    response_format: { type: "json_schema", json_schema: TUTOR_REPLY_SCHEMA as any },
-    messages,
+    response_format: { type: "json_object" },
+    messages: [
+      ...messages,
+      { role: "system", content: `Reply with ONLY one JSON object matching this JSON schema, no other text:\n${JSON.stringify(TUTOR_REPLY_SCHEMA.schema)}` },
+    ],
   });
-  const raw = completion.choices[0]?.message?.content;
+  return parseReply(completion.choices[0]?.message?.content);
+}
+
+/** Parse the model's JSON (tolerating a code fence) and fill missing fields with safe defaults. */
+function parseReply(raw: string | null | undefined): TutorReply {
   if (!raw) throw new Error("Empty model response");
-  return JSON.parse(raw) as TutorReply;
+  const text = raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
+  let r: any;
+  try {
+    r = JSON.parse(text);
+  } catch {
+    throw new Error("Model returned invalid JSON");
+  }
+  if (typeof r?.message !== "string" || !r.message.trim()) throw new Error("Model reply has no message");
+  const statuses = ["correct_step", "error", "final_correct", "question", "other"];
+  return {
+    message: r.message,
+    status: statuses.includes(r.status) ? r.status : "other",
+    error_type: typeof r.error_type === "string" && r.error_type ? r.error_type : null,
+    error_description: typeof r.error_description === "string" && r.error_description ? r.error_description : null,
+    skill: typeof r.skill === "string" && r.skill ? r.skill : "linear_equations",
+    hint_level: Number(r.hint_level) || 0,
+    problem_solved: r.problem_solved === true,
+    follow_up_problem: typeof r.follow_up_problem === "string" && r.follow_up_problem ? r.follow_up_problem : null,
+  };
 }
 
 /** Focused second call when the model's follow-up was missing or not a well-posed equation. */
@@ -89,14 +146,16 @@ async function generateFollowUp(ex: ExerciseContext): Promise<string> {
   try {
     const c = await openai().chat.completions.create({
       model: MODEL,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "follow_up",
-          strict: true,
-          schema: { type: "object", additionalProperties: false, required: ["problem"], properties: { problem: { type: "string" } } },
-        },
-      },
+      response_format: schemaUnsupported
+        ? { type: "json_object" }
+        : {
+            type: "json_schema",
+            json_schema: {
+              name: "follow_up",
+              strict: true,
+              schema: { type: "object", additionalProperties: false, required: ["problem"], properties: { problem: { type: "string" } } },
+            },
+          },
       messages: [
         {
           role: "user",
@@ -106,7 +165,8 @@ It must have a unique integer solution. Return only {"problem": "..."} using pla
         },
       ],
     });
-    const p = JSON.parse(c.choices[0]?.message?.content ?? "{}").problem as string;
+    const raw = (c.choices[0]?.message?.content ?? "{}").trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
+    const p = JSON.parse(raw).problem as string;
     if (isGoodFollowUp(p, ex.problem)) return p;
   } catch {}
   return templateProblem();
