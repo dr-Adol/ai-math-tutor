@@ -82,7 +82,29 @@ function describeError(err: any): { status: number; error: string } {
 }
 
 /** Set once a provider rejects strict JSON schemas, so later calls go straight to JSON mode. */
-let schemaUnsupported = false;
+// Gemini's OpenAI-compatible endpoint is known to reject strict schemas: skip the wasted first call.
+let schemaUnsupported = /generativelanguage\.googleapis\.com/.test(process.env.OPENAI_BASE_URL ?? "");
+
+/**
+ * Tutoring turns need speed more than deep thinking. Ask reasoning models for low effort
+ * (OPENAI_REASONING_EFFORT, default "low"; set it to "" to never send it). If a model rejects
+ * the parameter, stop sending it.
+ */
+const REASONING_EFFORT = process.env.OPENAI_REASONING_EFFORT ?? "low";
+let effortUnsupported = REASONING_EFFORT === "";
+
+async function complete(params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming) {
+  if (!effortUnsupported) {
+    try {
+      return await openai().chat.completions.create({ ...params, reasoning_effort: REASONING_EFFORT as any });
+    } catch (err: any) {
+      if (err?.status !== 400 || !/reasoning/i.test(err?.message ?? "")) throw err;
+      console.warn("[tutor] model rejected reasoning_effort, not sending it again:", err?.message);
+      effortUnsupported = true;
+    }
+  }
+  return openai().chat.completions.create(params);
+}
 
 /**
  * Works with OpenAI and with OpenAI-compatible providers (e.g. Google Gemini via OPENAI_BASE_URL).
@@ -93,7 +115,7 @@ async function ask(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<
   // No temperature: newer reasoning models only accept the default.
   if (!schemaUnsupported) {
     try {
-      const completion = await openai().chat.completions.create({
+      const completion = await complete({
         model: MODEL,
         response_format: { type: "json_schema", json_schema: TUTOR_REPLY_SCHEMA as any },
         messages,
@@ -105,7 +127,7 @@ async function ask(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<
       schemaUnsupported = true;
     }
   }
-  const completion = await openai().chat.completions.create({
+  const completion = await complete({
     model: MODEL,
     response_format: { type: "json_object" },
     messages: [
@@ -144,7 +166,7 @@ function parseReply(raw: string | null | undefined): TutorReply {
 async function generateFollowUp(ex: ExerciseContext): Promise<string> {
   const target = ex.mistakesSoFar.map((m) => `${m.type}: ${m.description}`).join("; ") || "a mistake in this problem";
   try {
-    const c = await openai().chat.completions.create({
+    const c = await complete({
       model: MODEL,
       response_format: schemaUnsupported
         ? { type: "json_object" }
