@@ -76,9 +76,16 @@ const CASES = [
 let passed = 0, total = 0;
 for (const c of CASES) {
   const t0 = Date.now();
-  const res = await fetch(URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c.body) });
-  const data = await res.json();
-  if (!res.ok) { console.log(`✗ ${c.name}: HTTP ${res.status} ${data.error}`); total++; continue; }
+  let res, data;
+  try {
+    res = await fetch(URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c.body) });
+    data = await res.json();
+  } catch (err) {
+    console.log(`✗ ${c.name}: request failed (${err.message}). Is the dev server running at ${URL}?`);
+    total++;
+    continue;
+  }
+  if (!res.ok || !data?.reply) { console.log(`✗ ${c.name}: HTTP ${res.status} ${data?.error ?? "no reply"}`); total++; continue; }
   const r = data.reply;
   const checks = c.check(r);
   const ok = checks.every(([v]) => v);
