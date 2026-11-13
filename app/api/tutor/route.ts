@@ -4,6 +4,7 @@ import { SYSTEM_PROMPT, TUTOR_REPLY_SCHEMA, buildContextBlock } from "@/lib/prom
 import { describeReport, verifyStudentMessage } from "@/lib/verifier";
 import { isGoodFollowUp, leaksAnswer, reconcile, templateProblem } from "@/lib/guardrails";
 import { rateLimit } from "@/lib/rateLimit";
+import { mergeSystemMessages, plainMath } from "@/lib/format";
 import type { ChatTurn, ExerciseContext, TutorReply, TutorResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -49,7 +50,7 @@ export async function POST(req: Request) {
       reply = await ask([
         ...base,
         { role: "assistant", content: JSON.stringify(reply) },
-        { role: "system", content: "Your reply revealed the final answer. Rewrite it so it guides with a question and does NOT state the value of the variable." },
+        { role: "user", content: "[Instruction from the tutoring system, not from the student] Your previous reply revealed the final answer. Rewrite it so it guides with a question and does NOT state the value of the variable." },
       ]);
       if (leaksAnswer(reply.message, exercise.problem)) {
         reply.message = "Let's not jump to the answer. Look at your last step: which rule did you use there, and does it apply to every term?";
@@ -93,7 +94,8 @@ let schemaUnsupported = /generativelanguage\.googleapis\.com/.test(process.env.O
 const REASONING_EFFORT = process.env.OPENAI_REASONING_EFFORT ?? "low";
 let effortUnsupported = REASONING_EFFORT === "";
 
-async function complete(params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming) {
+async function complete(input: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming) {
+  const params = { ...input, messages: mergeSystemMessages(input.messages) };
   if (!effortUnsupported) {
     try {
       return await openai().chat.completions.create({ ...params, reasoning_effort: REASONING_EFFORT as any });
@@ -151,7 +153,7 @@ function parseReply(raw: string | null | undefined): TutorReply {
   if (typeof r?.message !== "string" || !r.message.trim()) throw new Error("Model reply has no message");
   const statuses = ["correct_step", "error", "final_correct", "question", "other"];
   return {
-    message: r.message,
+    message: plainMath(r.message),
     status: statuses.includes(r.status) ? r.status : "other",
     error_type: typeof r.error_type === "string" && r.error_type ? r.error_type : null,
     error_description: typeof r.error_description === "string" && r.error_description ? r.error_description : null,

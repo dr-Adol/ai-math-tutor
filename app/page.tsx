@@ -23,6 +23,7 @@ export default function Page() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [waitNote, setWaitNote] = useState<string | null>(null);
   const [picker, setPicker] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
 
@@ -74,10 +75,7 @@ export default function Page() {
       .map((i) => ({ role: i.role, content: i.role === "assistant" ? i.reply?.message ?? i.content : i.content }));
 
     try {
-      const res = await fetch("/api/tutor", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const body = JSON.stringify({
           exercise: {
             problem: current.problem, origin: current.origin, targetSkill: current.targetSkill,
             mistakesSoFar: current.mistakes.map((m) => ({ type: m.type, description: m.description })),
@@ -86,9 +84,17 @@ export default function Page() {
           },
           messages: turns,
           learnerSummary: learnerSummary(progress),
-        }),
-      });
-      const data = await res.json();
+        });
+      const post = () => fetch("/api/tutor", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      let res = await post();
+      if (res.status === 429) {
+        // Free AI tiers allow only a few requests per minute: wait once and retry automatically.
+        setWaitNote("The AI is busy, retrying in a few seconds…");
+        await new Promise((r) => setTimeout(r, 8000));
+        setWaitNote(null);
+        res = await post();
+      }
+      const data = await res.json().catch(() => ({ error: "The server returned an unreadable response." }));
       if (!res.ok) throw new Error(data.error || "Request failed");
       const { reply } = data as TutorResponse;
       setFeed((f) => [...f, { kind: "msg", exerciseId: current.id, role: "assistant", content: reply.message, reply }]);
@@ -101,6 +107,7 @@ export default function Page() {
     } catch (e: any) {
       setError(e.message);
     } finally {
+      setWaitNote(null);
       setBusy(false);
     }
   }
@@ -184,7 +191,7 @@ export default function Page() {
                 </div>
               );
             })}
-            {busy && <div className="thinking">The tutor is checking your work…</div>}
+            {busy && <div className="thinking">{waitNote ?? "The tutor is checking your work… (usually 5–20 seconds)"}</div>}
             {error && <div className="error-note">Error: {error}</div>}
           </div>
 

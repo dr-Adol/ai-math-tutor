@@ -4,6 +4,8 @@ An interactive AI mathematics tutor inspired by the Soviet school of mathematics
 every transformation must be justified, mistakes are analysed ("работа над ошибками" — *work on mistakes*),
 and understanding is consolidated with a similar problem ("закрепление").
 
+**Live demo:** https://ai-math-tutor-one.vercel.app — click **"Try the test scenario"**.
+
 ## Quick start
 
 ```bash
