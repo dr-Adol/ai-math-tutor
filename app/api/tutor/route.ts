@@ -17,7 +17,7 @@ const MAX_CHARS = 1500;
 let client: OpenAI | null = null;
 function openai() {
   if (!process.env.OPENAI_API_KEY) throw Object.assign(new Error("Server is missing OPENAI_API_KEY"), { status: 500 });
-  client ??= new OpenAI({ timeout: 45_000, maxRetries: 1 });
+  client ??= new OpenAI({ timeout: 20_000, maxRetries: 1 }); // stays within the 60 s function limit
   return client;
 }
 
@@ -47,11 +47,15 @@ export async function POST(req: Request) {
     // 3a. Never reveal the answer of an unsolved problem: one rewrite attempt, then a safe fallback
     const solvedNow = verifier.steps.some((s) => s.equivalent && s.isFinalAnswer);
     if (!solvedNow && leaksAnswer(reply.message, exercise.problem)) {
-      reply = await ask([
-        ...base,
-        { role: "assistant", content: JSON.stringify(reply) },
-        { role: "user", content: "[Instruction from the tutoring system, not from the student] Your previous reply revealed the final answer. Rewrite it so it guides with a question and does NOT state the value of the variable." },
-      ]);
+      try {
+        reply = await ask([
+          ...base,
+          { role: "assistant", content: JSON.stringify(reply) },
+          { role: "user", content: "[Instruction from the tutoring system, not from the student] Your previous reply revealed the final answer. Rewrite it so it guides with a question and does NOT state the value of the variable." },
+        ]);
+      } catch (err: any) {
+        console.warn("[tutor] answer-leak rewrite failed, using safe fallback:", err?.status, err?.message);
+      }
       if (leaksAnswer(reply.message, exercise.problem)) {
         reply.message = "Let's not jump to the answer. Look at your last step: which rule did you use there, and does it apply to every term?";
       }
@@ -79,6 +83,8 @@ function describeError(err: any): { status: number; error: string } {
   if (err?.status === 401) return { status: 503, error: "The OpenAI API key is invalid. Check OPENAI_API_KEY in the deployment settings." };
   if (err?.status === 404 || code === "model_not_found") return { status: 503, error: `The model "${MODEL}" is not available for this OpenAI account. Set OPENAI_MODEL to a model you have access to.` };
   if (err?.status === 429) return { status: 429, error: "The AI service is busy. Try again in a moment." };
+  const overloaded = err?.status === 500 || err?.status === 503 || err?.status === 504 || /timed? ?out|overloaded|unavailable/i.test(`${err?.name} ${err?.message}`);
+  if (overloaded) return { status: 503, error: "The AI model is overloaded right now. Try again in a moment." };
   return { status: 502, error: "The tutor could not answer. Try again." };
 }
 

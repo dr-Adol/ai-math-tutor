@@ -87,7 +87,7 @@ export default function Page() {
         });
       const post = () => fetch("/api/tutor", { method: "POST", headers: { "Content-Type": "application/json" }, body });
       let res = await post();
-      if (res.status === 429) {
+      if (res.status === 429 || res.status === 503) {
         // Free AI tiers allow only a few requests per minute: wait once and retry automatically.
         setWaitNote("The AI is busy, retrying in a few seconds…");
         await new Promise((r) => setTimeout(r, 8000));
